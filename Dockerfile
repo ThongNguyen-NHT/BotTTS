@@ -14,6 +14,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY cli.py bot.py ./
 
-# Render cung cấp PORT khi chạy; cổng 10000 là mặc định.
-EXPOSE 10000
+# Render cung cấp PORT khi chạy; ứng dụng dự phòng cổng 8080.
+EXPOSE 8080
 CMD ["python", "cli.py", "run"]

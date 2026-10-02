@@ -47,7 +47,7 @@ Bot cần quyền **Connect** và **Speak** ở voice channel, cùng **View Chan
 1. Đẩy mã nguồn lên GitHub, tạo **New → Web Service** trên Render và kết nối repository.
 2. Chọn **Docker** làm runtime. Render sẽ build từ `Dockerfile` ở thư mục gốc.
 3. Trong **Environment**, thêm `DISCORD_TOKEN` với token bot. Không commit `.env`.
-4. Đặt **Health Check Path** là `/health`, rồi deploy. Web server bind `0.0.0.0` trên cổng `$PORT` Render cung cấp (mặc định `10000`).
-5. Xem logs để xác nhận bot đăng nhập Discord và HTTP server đã khởi động.
+4. Deploy. HTTP server và bot chạy cùng event loop; các route `GET /` và `GET /ping` trả `200` cùng nội dung `Bot is alive!`, bind `0.0.0.0` trên cổng `$PORT` (mặc định `8080`). Có thể cấu hình **Health Check Path** là `/ping`.
+5. Trong **Environment**, bảo đảm `DISCORD_TOKEN` là token mới nhất. Bật **Message Content Intent** trong Discord Developer Portal. Xem logs để xác nhận có dòng `Đã đăng nhập` và `HTTP server đang nghe`.
 
-Health endpoint chỉ báo process còn chạy; nó không giữ dịch vụ Free thức. Web Service Free sẽ spin down sau 15 phút không nhận traffic inbound. Để bot chạy liên tục, dùng Web Service trên gói trả phí; hoặc chọn Background Worker (phù hợp tiến trình bot không phục vụ HTTP, nhưng cần gói có phí). Không dựa vào ping giả để né giới hạn sleep.
+HTTP ping chỉ xác nhận web process còn phục vụ request; nó không xác nhận Discord Gateway đang kết nối và không phải bảo đảm uptime. Web Service Free có thể spin down khi không nhận traffic inbound. Uptime ping có thể đánh thức dịch vụ, nhưng không thay thế gói chạy liên tục và không bảo đảm bot luôn Online. Nếu dashboard Render báo Live mà bot Offline, kiểm tra logs quanh thời điểm mất kết nối (Gateway close code, lỗi xác thực/token, reconnect hoặc giới hạn session). Để chạy bot liên tục, dùng compute không spin down hoặc Background Worker phù hợp.

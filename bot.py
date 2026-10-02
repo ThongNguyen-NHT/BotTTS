@@ -15,6 +15,47 @@ from discord.ext import commands
 log = logging.getLogger("discord_tts")
 
 
+async def start_web_server() -> None:
+    """Chạy HTTP keep-alive trên cùng event loop với Discord Gateway."""
+    app = web.Application()
+
+    async def alive(_request: web.Request) -> web.Response:
+        return web.Response(text="Bot is alive!", status=200)
+
+    app.router.add_get("/", alive)
+    app.router.add_get("/ping", alive)
+    runner = web.AppRunner(app, access_log=log)
+    await runner.setup()
+    port = int(os.environ.get("PORT", "8080"))
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    try:
+        await site.start()
+        log.info("HTTP server đang nghe tại 0.0.0.0:%s", port)
+        # Giữ coroutine sống cho đến khi main hủy task lúc bot dừng.
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
+
+def split_text(text: str, limit: int = 250) -> list[str]:
+    """Chia văn bản gần ranh giới câu/từ để TTS xử lý nhanh, ổn định hơn."""
+    remaining = " ".join(text.split())
+    chunks: list[str] = []
+    while len(remaining) > limit:
+        cut = max(remaining.rfind(mark, 0, limit + 1) for mark in (". ", "! ", "? ", "; ", ", "))
+        if cut < limit // 2:
+            cut = remaining.rfind(" ", 0, limit + 1)
+        if cut <= 0:
+            cut = limit
+        else:
+            cut += 1
+        chunks.append(remaining[:cut].strip())
+        remaining = remaining[cut:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 class SpeechQueue:
     def __init__(self, bot: commands.Bot, guild_id: int, language: str):
         self.bot = bot
@@ -56,49 +97,53 @@ class SpeechQueue:
                         log.warning("Không thể chuyển voice channel: %s", exc)
                         continue
 
-                temp_path: Path | None = None
-                try:
-                    for attempt in range(3):
-                        with tempfile.NamedTemporaryFile(prefix="discord_tts_", suffix=".mp3", delete=False) as file:
-                            temp_path = Path(file.name)
-                        communicator = edge_tts.Communicate(text, self._voice_name())
-                        try:
-                            await communicator.save(str(temp_path))
-                        except edge_tts.exceptions.NoAudioReceived as exc:
-                            temp_path.unlink(missing_ok=True)
-                            temp_path = None
-                            if attempt == 2:
-                                raise
-                            delay = 2 * (attempt + 1)
-                            log.warning("Edge TTS không trả audio; thử lại sau %s giây (%s/3): %s", delay, attempt + 1, exc)
-                            await asyncio.sleep(delay)
-                        else:
-                            break
-                    if temp_path is None:
-                        raise RuntimeError("Không tạo được file âm thanh sau các lần thử lại.")
-                    if not temp_path.exists() or temp_path.stat().st_size == 0:
-                        raise RuntimeError("Dịch vụ TTS không tạo được âm thanh.")
-                    done = asyncio.Event()
-                    source = discord.FFmpegPCMAudio(str(temp_path))
-
-                    def after_play(error: Exception | None) -> None:
-                        if error:
-                            log.error("Lỗi phát âm thanh: %s", error)
-                        self.bot.loop.call_soon_threadsafe(done.set)
-
-                    voice.play(source, after=after_play)
-                    await done.wait()
-                except (edge_tts.exceptions.EdgeTTSException, OSError, RuntimeError, discord.DiscordException) as exc:
-                    log.warning("Không thể tạo/phát TTS: %s", exc)
-                finally:
-                    if temp_path:
-                        temp_path.unlink(missing_ok=True)
+                for part in split_text(text):
+                    await self._play_part(voice, part)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Lỗi xử lý mục trong hàng đợi TTS")
             finally:
                 self.items.task_done()
+
+    async def _play_part(self, voice: discord.VoiceClient, text: str) -> None:
+        temp_path: Path | None = None
+        try:
+            for attempt in range(3):
+                with tempfile.NamedTemporaryFile(prefix="discord_tts_", suffix=".mp3", delete=False) as file:
+                    temp_path = Path(file.name)
+                communicator = edge_tts.Communicate(text, self._voice_name())
+                try:
+                    await communicator.save(str(temp_path))
+                except edge_tts.exceptions.NoAudioReceived as exc:
+                    temp_path.unlink(missing_ok=True)
+                    temp_path = None
+                    if attempt == 2:
+                        raise
+                    delay = 2 * (attempt + 1)
+                    log.warning("Edge TTS không trả audio; thử lại sau %s giây (%s/3): %s", delay, attempt + 1, exc)
+                    await asyncio.sleep(delay)
+                else:
+                    break
+            if temp_path is None:
+                raise RuntimeError("Không tạo được file âm thanh sau các lần thử lại.")
+            if not temp_path.exists() or temp_path.stat().st_size == 0:
+                raise RuntimeError("Dịch vụ TTS không tạo được âm thanh.")
+            done = asyncio.Event()
+            source = discord.FFmpegPCMAudio(str(temp_path))
+
+            def after_play(error: Exception | None) -> None:
+                if error:
+                    log.error("Lỗi phát âm thanh: %s", error)
+                self.bot.loop.call_soon_threadsafe(done.set)
+
+            voice.play(source, after=after_play)
+            await done.wait()
+        except (edge_tts.exceptions.EdgeTTSException, OSError, RuntimeError, discord.DiscordException) as exc:
+            log.warning("Không thể tạo/phát một đoạn TTS: %s", exc)
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
 
     def _voice_name(self) -> str:
         # edge-tts yêu cầu tên voice đầy đủ; ánh xạ vài ngôn ngữ phổ biến.
@@ -113,37 +158,11 @@ class SpeechQueue:
 
 def create_bot(prefix: str = "!", language: str = "vi", auto_read_channel: int | None = None) -> commands.Bot:
     intents = discord.Intents.default()
+    intents.guilds = True
+    intents.messages = True
     intents.message_content = True
     intents.voice_states = True
-    class TTSBot(commands.Bot):
-        http_runner: web.AppRunner | None = None
-
-        async def setup_hook(self) -> None:
-            app = web.Application()
-
-            async def health(_request: web.Request) -> web.Response:
-                # 200 xác nhận process/web server còn sống; trạng thái Discord
-                # được trả về để quan sát, tránh health check tạo vòng restart.
-                return web.json_response({
-                    "status": "ok",
-                    "discord_connected": self.is_ready(),
-                })
-
-            app.router.add_get("/health", health)
-            self.http_runner = web.AppRunner(app, access_log=log)
-            await self.http_runner.setup()
-            port = int(os.environ.get("PORT", "10000"))
-            site = web.TCPSite(self.http_runner, host="0.0.0.0", port=port)
-            await site.start()
-            log.info("Health server đang nghe tại 0.0.0.0:%s", port)
-
-        async def close(self) -> None:
-            if self.http_runner is not None:
-                await self.http_runner.cleanup()
-                self.http_runner = None
-            await super().close()
-
-    bot = TTSBot(command_prefix=prefix, intents=intents, help_command=None)
+    bot = commands.Bot(command_prefix=prefix, intents=intents, help_command=None)
     queues: dict[int, SpeechQueue] = {}
 
     def queue_for(guild_id: int) -> SpeechQueue:
@@ -165,6 +184,10 @@ def create_bot(prefix: str = "!", language: str = "vi", auto_read_channel: int |
     @bot.event
     async def on_ready() -> None:
         log.info("Đã đăng nhập: %s (ID: %s)", bot.user, bot.user.id if bot.user else "?")
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=discord.Game("đọc văn bản | !s"),
+        )
         if auto_read_channel:
             log.info("Tự đọc tin nhắn tại channel ID %s", auto_read_channel)
 
@@ -238,7 +261,3 @@ def create_bot(prefix: str = "!", language: str = "vi", auto_read_channel: int |
                 log.exception("Lỗi dọn voice connection")
 
     return bot
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)

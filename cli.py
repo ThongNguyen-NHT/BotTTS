@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import logging
 import os
@@ -82,6 +83,27 @@ def setup() -> int:
     return 0
 
 
+async def main(token: str, args: argparse.Namespace) -> None:
+    """Chạy HTTP server và Discord bot đồng thời trên một event loop."""
+    from bot import create_bot, start_web_server
+
+    bot = create_bot(prefix=args.prefix, language=args.lang, auto_read_channel=args.auto_read_channel)
+    async with bot:
+        web_task = asyncio.create_task(start_web_server(), name="keep-alive-web")
+        bot_task = asyncio.create_task(bot.start(token), name="discord-gateway")
+        try:
+            done, _pending = await asyncio.wait(
+                (web_task, bot_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                task.result()
+        finally:
+            for task in (web_task, bot_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(web_task, bot_task, return_exceptions=True)
+
+
 def run_bot(args: argparse.Namespace) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -93,19 +115,12 @@ def run_bot(args: argparse.Namespace) -> int:
         return 1
     ffmpeg_dir = str(Path(ffmpeg).parent)
     os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-    try:
-        from bot import create_bot
-    except ImportError as exc:
-        print(f"Thiếu dependency: {exc}. Chạy `python -m pip install -r requirements.txt`.", file=sys.stderr)
-        return 1
-
     token = read_token()
     if not token:
         print("Chưa cấu hình token. Chạy `python cli.py setup`.", file=sys.stderr)
         return 1
     try:
-        bot = create_bot(prefix=args.prefix, language=args.lang, auto_read_channel=args.auto_read_channel)
-        bot.run(token, log_handler=None)
+        asyncio.run(main(token, args))
     except KeyboardInterrupt:
         print("Bot đã dừng.")
     except Exception as exc:
