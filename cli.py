@@ -83,7 +83,7 @@ def setup() -> int:
     return 0
 
 
-async def main(token: str, args: argparse.Namespace) -> None:
+async def run_bot_async(token: str, args: argparse.Namespace) -> None:
     """Chạy HTTP server và Discord bot đồng thời trên một event loop."""
     from bot import create_bot, start_web_server
 
@@ -120,7 +120,7 @@ def run_bot(args: argparse.Namespace) -> int:
         print("Chưa cấu hình token. Chạy `python cli.py setup`.", file=sys.stderr)
         return 1
     try:
-        asyncio.run(main(token, args))
+        asyncio.run(run_bot_async(token, args))
     except KeyboardInterrupt:
         print("Bot đã dừng.")
     except Exception as exc:
