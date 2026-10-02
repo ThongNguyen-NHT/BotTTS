@@ -116,7 +116,7 @@ def create_bot(prefix: str = "!", language: str = "vi", auto_read_channel: int |
                 })
 
             app.router.add_get("/health", health)
-            self.http_runner = web.AppRunner(app)
+            self.http_runner = web.AppRunner(app, access_log=log)
             await self.http_runner.setup()
             port = int(os.environ.get("PORT", "10000"))
             site = web.TCPSite(self.http_runner, host="0.0.0.0", port=port)

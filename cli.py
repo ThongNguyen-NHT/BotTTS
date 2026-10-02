@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import logging
 import os
 import shutil
 import sys
@@ -82,6 +83,10 @@ def setup() -> int:
 
 
 def run_bot(args: argparse.Namespace) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         print("Không tìm thấy FFmpeg. Chạy `python cli.py check` để xem hướng dẫn.", file=sys.stderr)
