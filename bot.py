@@ -58,10 +58,24 @@ class SpeechQueue:
 
                 temp_path: Path | None = None
                 try:
-                    with tempfile.NamedTemporaryFile(prefix="discord_tts_", suffix=".mp3", delete=False) as file:
-                        temp_path = Path(file.name)
-                    communicator = edge_tts.Communicate(text, self._voice_name())
-                    await communicator.save(str(temp_path))
+                    for attempt in range(3):
+                        with tempfile.NamedTemporaryFile(prefix="discord_tts_", suffix=".mp3", delete=False) as file:
+                            temp_path = Path(file.name)
+                        communicator = edge_tts.Communicate(text, self._voice_name())
+                        try:
+                            await communicator.save(str(temp_path))
+                        except edge_tts.exceptions.NoAudioReceived as exc:
+                            temp_path.unlink(missing_ok=True)
+                            temp_path = None
+                            if attempt == 2:
+                                raise
+                            delay = 2 * (attempt + 1)
+                            log.warning("Edge TTS không trả audio; thử lại sau %s giây (%s/3): %s", delay, attempt + 1, exc)
+                            await asyncio.sleep(delay)
+                        else:
+                            break
+                    if temp_path is None:
+                        raise RuntimeError("Không tạo được file âm thanh sau các lần thử lại.")
                     if not temp_path.exists() or temp_path.stat().st_size == 0:
                         raise RuntimeError("Dịch vụ TTS không tạo được âm thanh.")
                     done = asyncio.Event()
