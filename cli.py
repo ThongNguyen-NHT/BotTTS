@@ -83,28 +83,43 @@ def setup() -> int:
     return 0
 
 
-async def run_bot_async(token: str, args: argparse.Namespace) -> None:
-    """Chạy HTTP server và Discord bot đồng thời trên một event loop."""
+async def run_bot_async(token: str, args: argparse.Namespace, *, local: bool = False) -> None:
+    """Chạy Discord bot; bật HTTP keep-alive khi deploy lên Render."""
+    import discord
+
     from bot import create_bot, start_web_server
 
     bot = create_bot(prefix=args.prefix, language=args.lang, auto_read_channel=args.auto_read_channel)
     async with bot:
-        web_task = asyncio.create_task(start_web_server(), name="keep-alive-web")
-        bot_task = asyncio.create_task(bot.start(token), name="discord-gateway")
+        async def connect_gateway() -> None:
+            retry_delay = 60
+            while True:
+                try:
+                    await bot.start(token)
+                    return
+                except discord.HTTPException as exc:
+                    if local or exc.status != 429:
+                        raise
+                    logging.error("Discord rate-limited bot login (HTTP 429); retrying in %s seconds.", retry_delay)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 900)
+
+        bot_task = asyncio.create_task(connect_gateway(), name="discord-gateway")
+        tasks = [bot_task]
+        if not local:
+            tasks.append(asyncio.create_task(start_web_server(), name="keep-alive-web"))
         try:
-            done, _pending = await asyncio.wait(
-                (web_task, bot_task), return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
         finally:
-            for task in (web_task, bot_task):
+            for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(web_task, bot_task, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def run_bot(args: argparse.Namespace) -> int:
+def run_bot(args: argparse.Namespace, *, local: bool = False) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -120,7 +135,7 @@ def run_bot(args: argparse.Namespace) -> int:
         print("Chưa cấu hình token. Chạy `python cli.py setup`.", file=sys.stderr)
         return 1
     try:
-        asyncio.run(run_bot_async(token, args))
+        asyncio.run(run_bot_async(token, args, local=local))
     except KeyboardInterrupt:
         print("Bot đã dừng.")
     except Exception as exc:
@@ -138,12 +153,16 @@ def main() -> int:
     run_parser.add_argument("--prefix", default="!", help="Prefix lệnh (mặc định: !)")
     run_parser.add_argument("--lang", default="vi", help="Mã ngôn ngữ đọc mặc định (mặc định: vi)")
     run_parser.add_argument("--auto-read-channel", type=int, metavar="CHANNEL_ID", help="Đọc tin nhắn văn bản trong channel này")
+    local_parser = commands.add_parser("local", help="Chạy bot trên máy cá nhân, không mở HTTP server")
+    local_parser.add_argument("--prefix", default="!", help="Prefix lệnh (mặc định: !)")
+    local_parser.add_argument("--lang", default="vi", help="Mã ngôn ngữ đọc mặc định (mặc định: vi)")
+    local_parser.add_argument("--auto-read-channel", type=int, metavar="CHANNEL_ID", help="Đọc tin nhắn văn bản trong channel này")
     args = parser.parse_args()
     if args.command == "check":
         return check_environment()
     if args.command == "setup":
         return setup()
-    return run_bot(args)
+    return run_bot(args, local=args.command == "local")
 
 
 if __name__ == "__main__":
