@@ -89,34 +89,33 @@ async def run_bot_async(token: str, args: argparse.Namespace, *, local: bool = F
 
     from bot import create_bot, start_web_server
 
-    bot = create_bot(prefix=args.prefix, language=args.lang, auto_read_channel=args.auto_read_channel)
-    async with bot:
-        async def connect_gateway() -> None:
-            retry_delay = 60
-            while True:
-                try:
+    async def connect_gateway() -> None:
+        retry_delay = 60
+        while True:
+            bot = create_bot(prefix=args.prefix, language=args.lang, auto_read_channel=args.auto_read_channel)
+            try:
+                async with bot:
                     await bot.start(token)
-                    return
-                except discord.HTTPException as exc:
-                    if local or exc.status != 429:
-                        raise
-                    logging.error("Discord rate-limited bot login (HTTP 429); retrying in %s seconds.", retry_delay)
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 900)
+                return
+            except discord.HTTPException as exc:
+                if local or exc.status != 429:
+                    raise
+                logging.error("Discord rate-limited bot login (HTTP 429); retrying in %s seconds.", retry_delay)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 900)
 
-        bot_task = asyncio.create_task(connect_gateway(), name="discord-gateway")
-        tasks = [bot_task]
-        if not local:
-            tasks.append(asyncio.create_task(start_web_server(), name="keep-alive-web"))
-        try:
-            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [asyncio.create_task(connect_gateway(), name="discord-gateway")]
+    if not local:
+        tasks.append(asyncio.create_task(start_web_server(), name="keep-alive-web"))
+    try:
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def run_bot(args: argparse.Namespace, *, local: bool = False) -> int:
